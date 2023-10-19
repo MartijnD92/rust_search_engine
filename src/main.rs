@@ -1,68 +1,96 @@
-use std::{
-    env,
-    fs::{self, File},
-    io::{self, BufReader},
-    path::Path,
-    process::{exit, ExitCode},
-};
+use std::{env, fs::File, io::BufReader, path::Path, process};
 use xml::reader::{EventReader, XmlEvent};
 
-fn parse_xml_file(file_path: &Path) -> Result<String, ()> {
-    let file = File::open(file_path).map_err(|err| {
-        eprintln!(
-            "ERROR: coult not open file {file_path}: {err}",
-            file_path = file_path.display()
-        );
-    })?;
-    let file = BufReader::new(file);
-    let er = EventReader::new(file);
+use core::fmt;
 
-    let content: String = er
-        .into_iter()
-        .filter_map(|event| match event {
-            Ok(XmlEvent::Characters(e)) => Some(e),
-            _ => None,
-        })
-        .collect();
+#[derive(Debug)]
+struct TextFile;
 
-    Ok(content)
+#[derive(Debug)]
+struct Xml<'a> {
+    path: &'a Path,
+    file: File,
+    content: Option<String>,
 }
 
-fn parse_txt_file(file_path: &Path) -> Result<String, ()> {
-    fs::read_to_string(file_path).map_err(|err| {
-        eprintln!(
-            "ERROR: coult not open file {file_path}: {err}",
-            file_path = file_path.display()
-        );
-    })
+impl<'a> fmt::Display for Xml<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Xml {{ path: {}, content: {:?} }} ",
+            self.path.display(),
+            self.content
+        )
+    }
 }
 
-fn parse_file_by_extension(file_path: &Path) -> Result<String, ()> {
-    let extension = file_path
-        .extension()
-        .ok_or_else(|| {
-            eprintln!(
-                "ERROR: could not parse file extension for {file_path}.",
-                file_path = file_path.display()
-            );
-        })?
-        .to_string_lossy();
+trait Parser: fmt::Display {
+    fn parse(&mut self);
+}
 
-    match extension.as_ref() {
-        "xml" | "xhtml" | "html" => parse_xml_file(file_path),
-        "txt" => parse_txt_file(file_path),
-        _ => {
-            eprintln!(
-                "ERROR: can't detect file type of {file_path}: unsupported extension {extension}",
-                file_path = file_path.display(),
-                extension = extension
-            );
-            Err(())
+impl<'a> Parser for Xml<'a> {
+    fn parse(&mut self) {
+        let file = BufReader::new(&self.file);
+        let er = EventReader::new(file);
+
+        let content: String = er
+            .into_iter()
+            .filter_map(|event| match event {
+                Ok(XmlEvent::Characters(e)) => Some(e),
+                _ => None,
+            })
+            .collect();
+
+        self.content = if content.is_empty() {
+            None
+        } else {
+            Some(content)
         }
     }
 }
 
-fn entry() -> Result<(), ()> {
+#[allow(clippy::new_ret_no_self)]
+impl TextFile {
+    fn new(path: &Path) -> impl Parser + '_ {
+        let file = File::open(path)
+            .map_err(|err| {
+                eprintln!(
+                    "ERROR: could not open file {file_path}: {err}",
+                    file_path = path.display()
+                );
+                process::exit(1);
+            })
+            .unwrap();
+
+        let extension = path
+            .extension()
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "ERROR: could not parse file at {file_path}.",
+                    file_path = path.display()
+                );
+                process::exit(1);
+            })
+            .to_string_lossy();
+
+        let mut file = match extension.as_ref() {
+            "xml" | "xhtml" | "html" => Xml {
+                path,
+                file,
+                content: None,
+            },
+            _ => {
+                eprintln!("ERROR: Unknown filetype!");
+                process::exit(1);
+            }
+        };
+        file.parse();
+
+        file
+    }
+}
+
+fn main() -> Result<(), ()> {
     let args: Vec<_> = env::args().collect();
     if args.len() < 2 {
         eprintln!("ERROR: not enough arguments provided");
@@ -71,18 +99,9 @@ fn entry() -> Result<(), ()> {
     let file_path: &str = &args[1];
     let file_path = Path::new(&file_path);
 
-    let doc = match parse_file_by_extension(file_path) {
-        Ok(content) => content,
-        Err(()) => return Err(()),
-    };
-    println!("{doc}");
+    let document = TextFile::new(file_path);
+
+    println!("{}", document);
 
     Ok(())
-}
-
-fn main() -> ExitCode {
-    match entry() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(()) => ExitCode::FAILURE,
-    }
 }
